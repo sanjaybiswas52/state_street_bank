@@ -1,4 +1,8 @@
 from pyspark.sql import SparkSession
+try:
+    from pyspark.dbutils import dbutils
+except ImportError:
+    dbutils = None
 from datetime import datetime
 from pyspark.sql.functions import sum as _sum
 from pyspark.sql import functions as F
@@ -49,9 +53,6 @@ class CommonUtilityFunctions:
             f"gpa_ngp_{schema}_{tablename}_"
             f"{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         )
-    
-    class CommonUtilityFunctions:
-    _spark = None
 
     @staticmethod
     def calculate_inception_date(main_df, transaction_df, dim_date_df, key_column, transaction_date, inception_fieldname):
@@ -66,7 +67,7 @@ class CommonUtilityFunctions:
         gold_prd_df=main_df.join(min_dates, main_df[f'{key_column}'] == min_dates[f'{key_column}'], 'inner')
         return gold_prd_df
 
-    def _create_filebase_list(source_format,source_connection,client_name,master_object,gl_investment_object,gl_investor_object, var_batch_id, _read_gl_investment, _read_gl_investor);
+    def _create_filebase_list(source_format,source_connection,client_name,master_object,gl_investment_object,gl_investor_object, var_batch_id, _read_gl_investment, _read_gl_investor):
         if source_format == "CSV":
             dispatch = [("MASTER",2, source_connection+client_name+"/"+master_object + "*.csv", _read_master),("GENERAL_LEDGER_INVESTMENT",1, source_connection+client_name+"/"+gl_investment_object + "*.csv", _read_gl_investment),("GENERAL_LEDGER_INVESTOR",1, source_connection+client_name+"/"+gl_investor_object + "*.csv", _read_gl_investor)]
         elif source_format== "table":
