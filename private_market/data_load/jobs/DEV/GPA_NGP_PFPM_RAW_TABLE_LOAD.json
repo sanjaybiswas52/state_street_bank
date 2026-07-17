@@ -1,0 +1,48 @@
+{
+  "spark_python_wheel_job": {
+    "name": "GPA_NGP_PFPM_RAW_TABLE_LOAD",
+    "always_running": false,
+    "retry_on_timeout": false,
+    "max_retry_interval_millis": 0,
+    "max_concurrent_runs": 1,
+    "email_notifications": null,
+    "schedule": null,
+    "spark_jar_tasks": null,
+    "notebook_tasks": null,
+    "spark_python_tasks": null,
+    "python_wheel_tasks": {
+      {
+        "task_key": "load_raw_tables_bronze",
+        "run_if": "ALL_SUCCESS",
+        "depends_on": null,
+        "existing_cluster_name": "GPA_NGP_DEV_CLUSTER_6",
+        "library_wheel_paths": ["/Volumes/ssdsdno_dev_catalog_01/app_library/ssdsdno_dev_volume_02/gpangpfp_pipeline_package/latest/pipeline_package-0.1.8-py3-none"],
+        "python_wheel_entry_point": {
+            "entry_point": "load_raw_tables_bronze",
+            "package_name": "pipeline_package",
+            "parameters": [],
+            "named_parameters": {
+                "ENVIRONMENT": "default",
+                "SOURCE_FILE": "default",
+                "TARGET_TABLE": "default"
+                }
+            }
+        }
+    },
+    "sql_tasks": null,
+        "parameter": {
+            "parameter1": {
+                "name": "ENVIRONMENT",
+                "default": "dev"
+            },
+            "parameter2": {
+                "name": "SOURCE_FILE",
+                "default": "Transaction_type_Data"
+            },
+            "parameter3": {
+                "name": "TARGET_TABLE",
+                "default": "TRANSACTION_TYPE"
+            }
+        }
+    }
+}

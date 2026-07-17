@@ -1,0 +1,12 @@
+{
+    "storage_account_name": "npeesscd1kngpdev02",
+    "container_name": "databricks-external-tables",
+    "data_container_name": "data",
+    "storage_folder": "PrivateMarket",
+    "pm_medallion_catalog_var": "npee_gpangp_dev_catalog_01",
+    "pm_snowflake_catalog_var": "npee_gpangp_dev_snowflake_catalog_sfdb_d_gpa_ngp",
+    "adls_base": "abfss://databricks-external-tables@npeesscd1kngpdev02.dfs.core.windows.net",
+    "client_onboarding_root_directory": "private_markets",
+    "adls_data_base": "abfss://data@npeesscd1kngpdev02.dfs.core.windows.net",
+    "external_volume_path_privatemarket": "/Volumes/npee_gpangp_dev_catalog_01/bronze/npee_gpangp_d"
+}

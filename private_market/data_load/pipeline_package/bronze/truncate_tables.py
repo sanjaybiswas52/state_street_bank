@@ -5,6 +5,7 @@ from pipeline_package.utils.CommonUtilityFunctions import CommonUtilityFunctions
 from pipeline_package.utils.EnvironmentConfigLoader import EnvironmentConfigLoader
 from pipeline_package.utils.SilverConstants import SilverConstants
 from pipeline_package.utils.MetadataConstants import MetadataConstants
+from pipeline_package.utils.argument_parser import ENVIRONMENT
 
 env = ENVIRONMENT
 # Build const_dict following the same pattern used across all Gold-PRD processes
