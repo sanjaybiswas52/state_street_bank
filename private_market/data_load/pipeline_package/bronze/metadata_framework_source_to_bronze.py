@@ -139,7 +139,7 @@ def read_gl_investment_remaining_records(df_source, spark_session, target_table:
 
     return df_source
 
-
+# Return only GENERAL_LEDGER_ACTIVITY_INVESTOR records that are not already present in bronze.
 def read_gl_investor_remaining_records(df_source, spark_session, target_table: str):
     if gl_investor_key_column not in df_source.columns:
         raise ValueError("Missing required INVESTOR incremental column: " + gl_investor_key_column)
@@ -206,144 +206,206 @@ def data_ingestion():
             dbutils.notebook.exit(message)
             return
 
-    message = "No active extract config rows found"
-    logging.info(message)
-    AuditFactory.write_log(spark_session, job_id, "Read Config", "INFO", message)
-    AuditFactory.write_log(spark_session, job_id, "Job Completed", "INFO", "Pipeline Completed Successfully")
-    return
+        message = "No active extract config rows found"
+        logging.info(message)
+        AuditFactory.write_log(spark_session, job_id, "Read Config", "INFO", message)
+        AuditFactory.write_log(spark_session, job_id, "Job Completed", "INFO", "Pipeline Completed Successfully")
+        return
 
-# Iterate for individual source connection from Extract Config table
-for meta in extract_configs:
-    source_type = (meta.SOURCE_TYPE or "").upper()
-    source_table = meta.SOURCE_TABLE
-    source_load_type = (meta.LOAD_TYPE or "").lower()
-    source_connection = resolve_source_connection(source_table, source_load_type)
-    source_object = resolve_source_object(source_type)
-    target_table = resolve_target_table(source_type)
-    source_client_id = str(meta.CLIENT_ID)
+    # Iterate for individual source connection from Extract Config table
+    for meta in extract_configs:
+        source_type = (meta.SOURCE_TYPE or "").upper()
+        source_table = meta.SOURCE_TABLE
+        source_load_type = (meta.LOAD_TYPE or "").lower()
+        source_connection = resolve_source_connection(source_table, source_load_type)
+        source_object = resolve_source_object(source_type)
+        target_table = resolve_target_table(source_type)
+        source_client_id = str(meta.CLIENT_ID)
 
-try:
-    logging.info(f"extract_config_df record: {format_extract_config_details(meta)}")
-    batch_id = str(uuid.uuid4())
+        try:
+            logging.info(f"extract_config_df record: {format_extract_config_details(meta)}")
+            batch_id = str(uuid.uuid4())
 
-    # Variable to define file movement indicator, 0-> No file exists, 1-> Transaction File exists, 2-> File exists for master data
-    file_movement_indicator = 0
+            # Variable to define file movement indicator, 0-> No file exists, 1-> Transaction File exists, 2-> File exists for master data
+            file_movement_indicator = 0
 
-    src_path = source_connection + client_name + "/"
-    dest_path = source_connection + client_name + "/PROCESSED/"
-    fileMover = None
-    if source_load_type == "csv":
-        # File movement applies only to file-based sources.
-        fileMover = FileFactory(dbutils, src_path, dest_path)
+            src_path = source_connection + client_name + "/"
+            dest_path = source_connection + client_name + "/PROCESSED/"
+            fileMover = None
+            if source_load_type == "csv":
+                # File movement applies only to file-based sources.
+                fileMover = FileFactory(dbutils, src_path, dest_path)
 
-    reader_type = "snowflake" if source_load_type == "table" else source_load_type
-    source_data_reader = DataReaderFactory.get_reader(reader_type)
-    pattern = source_table + "_" + var_batch_id
-    entity_source_count = None
-    investment_source_count = None
-    investor_source_count = None
+            reader_type = "snowflake" if source_load_type == "table" else source_load_type
+            source_data_reader = DataReaderFactory.get_reader(reader_type)
+            pattern = source_table + "_" + var_batch_id
+            entity_source_count = None
+            investment_source_count = None
+            investor_source_count = None
 
-    def _read_source(object_full_name):
-        if source_load_type == "table":
-            return source_data_reader.read(spark_session, sf_options, object_full_name)
-        return source_data_reader.read(spark_session, object_full_name)
+            def _read_source(object_full_name):
+                if source_load_type == "table":
+                    return source_data_reader.read(spark_session, sf_options, object_full_name)
+                return source_data_reader.read(spark_session, object_full_name)
 
-    # Handler functions encapsulate per-pattern filter logic
-    def _read_master(object_full_name):
-        nonlocal entity_source_count
-        df_master = _read_source(object_full_name) \
-            .filter(F.col("CLIENT_ID") == source_client_id)
-        if source_type == "ENTITY":
-            entity_source_count = df_master.count()
-            return read_entity_incremental(df_master, spark_session, target_table, source_client_id)
-        return df_master
-
-    def _read_gl_investment(object_full_name):
-        nonlocal investment_source_count
-        df_investment = _read_source(object_full_name) \
-            .filter(F.col("CLIENT_ID") == source_client_id) \
-            .filter(F.col("BATCH_ID").cast("string") == var_batch_id)
-
-        investment_source_count = df_investment.count()
-
-        return read_gl_investment_remaining_records(df_investment, spark_session, target_table)
-    
-    def _read_gl_investor(object_full_name):
-        nonlocal investor_source_count
-        df_investor = _read_source(object_full_name) \
-            .filter(F.col("CLIENT_ID") == source_client_id) \
-            .filter(F.col("BATCH_ID").cast("string") == var_batch_id)
-
-        investor_source_count = df_investor.count()
-
-        return read_gl_investor_remaining_records(df_investor, spark_session, target_table)
-
-    # Return list of object wise pattern definition: (match_objectname_pattern, file_movement_indicator, object_full_name, handler_
-    dispatch = CommonUtilityFunctions._create_filebase_list(
-        source_load_type,
-        source_connection,
-        client_name,
-        const_dict["ENTITY"],
-        const_dict["GL_INVESTMENT"],
-        const_dict["GL_INVESTOR"],
-        var_batch_id,
-        _read_master,
-        _read_gl_investment,
-        _read_gl_investor,
-    )
-
-    iniCount = 0
-    matched = False
-    while iniCount < len(dispatch) and not matched:
-        match_text, file_movement_indicator, object_full_name, handler = dispatch[iniCount]
-        matched = match_text in source_object
-        if matched:
-            # read + filter via matched handler
-            logging.info("object_full_name is: %s", object_full_name)
-            df_source = handler(object_full_name)
-
-            if file_movement_indicator == 0:
-                logging.info("No file exists for: " + source_table)
-                AuditFactory.write_log(spark_session, job_id, "Read Source", "ERROR", "No data found for: " + source_table)
-            else:
-                AuditFactory.write_log(spark_session, job_id, "Read Source", "SUCCESS", "Source data read successfully for: " + source_table)
-
+            # Handler functions encapsulate per-pattern filter logic
+            def _read_master(object_full_name):
+                nonlocal entity_source_count
+                df_master = _read_source(object_full_name) \
+                    .filter(F.col("CLIENT_ID") == source_client_id)
                 if source_type == "ENTITY":
-                    filtered_source_count = df_source.count()
-                    logging.info("Filtered source rows for SOURCE_TYPE:%s, CLIENT_ID:%s %s", 
-                                    source_type, 
-                                    source_client_id, 
-                                    filtered_source_count)
+                    entity_source_count = df_master.count()
+                    return read_entity_incremental(df_master, spark_session, target_table, source_client_id)
+                return df_master
 
-                if filtered_source_count == 0 and entity_source_count and entity_source_count > 0:
-                    no_remaining_message = (
-                        "No remaining new source records found for SOURCE_TYPE: "
-                        + source_type
-                        + ", CLIENT_ID: "
-                        + source_client_id
-                        + " in source table: "
-                        + source_table
-                        + ". All ENTITY_ID values are already present in target table: "
-                        + target_table
-                    )
-                    logging.info(no_remaining_message)
-                    AuditFactory.write_log(spark_session, job_id, "Write Output", "INFO", no_remaining_message)
-                    brk
+            def _read_gl_investment(object_full_name):
+                nonlocal investment_source_count
+                df_investment = _read_source(object_full_name) \
+                    .filter(F.col("CLIENT_ID") == source_client_id) \
+                    .filter(F.col("BATCH_ID").cast("string") == var_batch_id)
 
-                if source_type in ("INVESTMENT", "INVESTOR"):
-                    filtered_source_count = df_source.count()
-                    logging.info(
-                        "Filtered source rows for SOURCE_TYPE=%s, CLIENT_ID=%s, BATCH_ID=%s",
-                        source_type,
-                        source_client_id,
-                        var_batch_id,
-                        filtered_source_count
-                    )
-                    # Investment/Investor may have zero remaining rows after recovery filtering.
-                    if filtered_source_count == 0:
-                        if source_type == "INVESTMENT" and investment_source_count and investment_source_count > 0:
+                investment_source_count = df_investment.count()
+
+                return read_gl_investment_remaining_records(df_investment, spark_session, target_table)
+            
+            def _read_gl_investor(object_full_name):
+                nonlocal investor_source_count
+                df_investor = _read_source(object_full_name) \
+                    .filter(F.col("CLIENT_ID") == source_client_id) \
+                    .filter(F.col("BATCH_ID").cast("string") == var_batch_id)
+
+                investor_source_count = df_investor.count()
+
+                return read_gl_investor_remaining_records(df_investor, spark_session, target_table)
+
+            # Return list of object wise pattern definition: (match_objectname_pattern, file_movement_indicator, object_full_name, handler_
+            dispatch = CommonUtilityFunctions._create_filebase_list(
+                source_load_type,
+                source_connection,
+                client_name,
+                const_dict["ENTITY"],
+                const_dict["GL_INVESTMENT"],
+                const_dict["GL_INVESTOR"],
+                var_batch_id,
+                _read_master,
+                _read_gl_investment,
+                _read_gl_investor,
+            )
+
+            iniCount = 0
+            matched = False
+            while iniCount < len(dispatch) and not matched:
+                match_text, file_movement_indicator, object_full_name, handler = dispatch[iniCount]
+                matched = match_text in source_object
+                if matched:
+                    # read + filter via matched handler
+                    logging.info("object_full_name is: %s", object_full_name)
+                    df_source = handler(object_full_name)
+
+                    if file_movement_indicator == 0:
+                        logging.info("No file exists for: " + source_table)
+                        AuditFactory.write_log(spark_session, job_id, "Read Source", "ERROR", "No data found for: " + source_table)
+                    else:
+                        AuditFactory.write_log(spark_session, job_id, "Read Source", "SUCCESS", "Source data read successfully for: " + source_table)
+
+                        if source_type == "ENTITY":
+                            filtered_source_count = df_source.count()
+                            logging.info("Filtered source rows for SOURCE_TYPE:%s, CLIENT_ID:%s %s", 
+                                            source_type, 
+                                            source_client_id, 
+                                            filtered_source_count)
+
+                        if filtered_source_count == 0 and entity_source_count and entity_source_count > 0:
                             no_remaining_message = (
                                 "No remaining new source records found for SOURCE_TYPE: "
+                                + source_type
+                                + ", CLIENT_ID: "
+                                + source_client_id
+                                + " in source table: "
+                                + source_table
+                                + ". All ENTITY_ID values are already present in target table: "
+                                + target_table
+                            )
+                            logging.info(no_remaining_message)
+                            AuditFactory.write_log(spark_session, job_id, "Write Output", "INFO", no_remaining_message)
+                            brk
+
+                        if source_type in ("INVESTMENT", "INVESTOR"):
+                            filtered_source_count = df_source.count()
+                            logging.info(
+                                "Filtered source rows for SOURCE_TYPE=%s, CLIENT_ID=%s, BATCH_ID=%s",
+                                source_type,
+                                source_client_id,
+                                var_batch_id,
+                                filtered_source_count
+                            )
+                            # Investment/Investor may have zero remaining rows after recovery filtering.
+                            if filtered_source_count == 0:
+                                if source_type == "INVESTMENT" and investment_source_count and investment_source_count > 0:
+                                    no_remaining_message = (
+                                        "No remaining new source records found for SOURCE_TYPE: "
+                                        + source_type
+                                        + ", CLIENT_ID: "
+                                        + source_client_id
+                                        + ", BATCH_ID: "
+                                        + str(var_batch_id)
+                                        + " in source table: "
+                                        + source_table
+                                        + ". All TRANSACTION_ID values are already present in target table: "
+                                        + target_table
+                                    )
+                                    logging.info(no_remaining_message)
+                                    AuditFactory.write_log(spark_session, job_id, "Write Output", "INFO", no_remaining_message)
+
+                                if file_movement_indicator == 1 and fileMover is not None:
+                                    fileMover.move_files(pattern)
+                                    logging.info("move file")
+                                    break
+
+                            if source_type == "INVESTOR" and investor_source_count and investor_source_count > 0:
+                                no_remaining_message = (
+                                    "No remaining new source records found for SOURCE_TYPE: "
+                                    + source_type
+                                    + " CLIENT_ID: "
+                                    + source_client_id
+                                    + " BATCH_ID: "
+                                    + str(var_batch_id)
+                                    + " in source table: "
+                                    + source_table
+                                    + " All ALLOCATION_ID values are already present in target table: "
+                                    + target_table
+                                )
+                                logging.info(no_remaining_message)
+                                AuditFactory.write_log(spark_session, job_id, "Write Output", "INFO", no_remaining_message)
+
+                            if file_movement_indicator == 1 and fileMover is not None:
+                                fileMover.move_files(pattern)
+                                logging.info("move file")
+                                break
+
+                            if source_type == "INVESTOR" and investor_source_count and investor_source_count > 0:
+                                no_remaining_message = (
+                                    "No remaining new source records found for SOURCE_TYPE: "
+                                    + source_type
+                                    + " CLIENT_ID: "
+                                    + source_client_id
+                                    + " BATCH_ID: "
+                                    + str(var_batch_id)
+                                    + " in source table: "
+                                    + source_table
+                                    + " All ALLOCATION_ID values are already present in target table: "
+                                    + target_table
+                                )
+                                logging.info(no_remaining_message)
+                                AuditFactory.write_log(spark_session, job_id, "Write Output", "INFO", no_remaining_message)
+
+                            if file_movement_indicator == 1 and fileMover is not None:
+                                fileMover.move_files(pattern)
+                                logging.info("move file")
+                                break
+                        
+                        missing_batch_message = (
+                                "No source records found for SOURCE_TYPE: "
                                 + source_type
                                 + ", CLIENT_ID: "
                                 + source_client_id
@@ -351,111 +413,49 @@ try:
                                 + str(var_batch_id)
                                 + " in source table: "
                                 + source_table
-                                + ". All TRANSACTION_ID values are already present in target table: "
-                                + target_table
-                            )
-                            logging.info(no_remaining_message)
-                            AuditFactory.write_log(spark_session, job_id, "Write Output", "INFO", no_remaining_message)
-
-                        if file_movement_indicator == 1 and fileMover is not None:
-                            fileMover.move_files(pattern)
-                            logging.info("move file")
-                            break
-
-                    if source_type == "INVESTOR" and investor_source_count and investor_source_count > 0:
-                        no_remaining_message = (
-                            "No remaining new source records found for SOURCE_TYPE: "
-                            + source_type
-                            + " CLIENT_ID: "
-                            + source_client_id
-                            + " BATCH_ID: "
-                            + str(var_batch_id)
-                            + " in source table: "
-                            + source_table
-                            + " All ALLOCATION_ID values are already present in target table: "
-                            + target_table
                         )
-                        logging.info(no_remaining_message)
-                        AuditFactory.write_log(spark_session, job_id, "Write Output", "INFO", no_remaining_message)
+                        logging.info(missing_batch_message)
+                        AuditFactory.write_log(spark_session, job_id, "Read Source", "ERROR", missing_batch_message)
+                        break
 
+                    df_source = df_source.select([F.col(c).cast("string").alias(c) for c in df_source.columns])
+
+                    # get the current user to insert into inserted by column
+                    query = "select current_user()"
+                    result = spark_session.sql(query)
+                    curr_user = result.collect()[0][0]
+
+                    # Add Audit columns for individual bronze layer tables
+                    if source_type == "INVESTOR":
+                        df_source = df_source.withColumn("BATCH_ID_PM", F.lit(batch_id_pm)) \
+                            .withColumn("INSERTED_DATETIME", F.current_timestamp()) \
+                            .withColumn("INSERTED_BY", F.lit(curr_user).cast(StringType()))
+                    else:
+                        df_source = df_source.withColumn("BATCH_ID_PM", F.lit(batch_id_pm)) \
+                        .withColumn("INSERTED_DATETIME", F.current_timestamp()) \
+                        .withColumn("INSERTED_BY", F.lit(curr_user.cast(StringType())))
+
+                    # Write data to target table
+                    record_count = df_source.count()
+                    writer.write(df_source, f"{target_table}", "append")
+                    AuditFactory.write_log(
+                        spark_session,
+                        job_id,
+                        "Write Output",
+                        "SUCCESS",
+                        "Data loaded successfully in target table: " + target_table + " and Record count is: " + str(record_count),
+                    )
+                    logging.info("Data loaded successfully in target table: " + target_table)
+                    logging.info("record_count is: %s", record_count)
+
+                    # Move files to Processed folder for Transactional Data
                     if file_movement_indicator == 1 and fileMover is not None:
                         fileMover.move_files(pattern)
                         logging.info("move file")
-                        break
 
-                    if source_type == "INVESTOR" and investor_source_count and investor_source_count > 0:
-                        no_remaining_message = (
-                            "No remaining new source records found for SOURCE_TYPE: "
-                            + source_type
-                            + " CLIENT_ID: "
-                            + source_client_id
-                            + " BATCH_ID: "
-                            + str(var_batch_id)
-                            + " in source table: "
-                            + source_table
-                            + " All ALLOCATION_ID values are already present in target table: "
-                            + target_table
-                        )
-                        logging.info(no_remaining_message)
-                        AuditFactory.write_log(spark_session, job_id, "Write Output", "INFO", no_remaining_message)
-
-                    if file_movement_indicator == 1 and fileMover is not None:
-                        fileMover.move_files(pattern)
-                        logging.info("move file")
-                        break
-                
-                missing_batch_message = (
-                        "No source records found for SOURCE_TYPE: "
-                        + source_type
-                        + ", CLIENT_ID: "
-                        + source_client_id
-                        + ", BATCH_ID: "
-                        + str(var_batch_id)
-                        + " in source table: "
-                        + source_table
-                )
-                logging.info(missing_batch_message)
-                AuditFactory.write_log(spark_session, job_id, "Read Source", "ERROR", missing_batch_message)
-                break
-
-            df_source = df_source.select([F.col(c).cast("string").alias(c) for c in df_source.columns])
-
-            # get the current user to insert into inserted by column
-            query = "select current_user()"
-            result = spark_session.sql(query)
-            curr_user = result.collect()[0][0]
-
-            # Add Audit columns for individual bronze layer tables
-            if source_type == "INVESTOR":
-                df_source = df_source.withColumn("BATCH_ID_PM", F.lit(batch_id_pm)) \
-                    .withColumn("INSERTED_DATETIME", F.current_timestamp()) \
-                    .withColumn("INSERTED_BY", F.lit(curr_user).cast(StringType()))
-            else:
-                df_source = df_source.withColumn("BATCH_ID_PM", F.lit(batch_id_pm)) \
-                .withColumn("INSERTED_DATETIME", F.current_timestamp()) \
-                .withColumn("INSERTED_BY", F.lit(curr_user.cast(StringType())))
-
-            # Write data to target table
-            record_count = df_source.count()
-            writer.write(df_source, f"{target_table}", "append")
-            AuditFactory.write_log(
-                spark_session,
-                job_id,
-                "Write Output",
-                "SUCCESS",
-                "Data loaded successfully in target table: " + target_table + " and Record count is: " + str(record_count),
-            )
-            logging.info("Data loaded successfully in target table: " + target_table)
-            logging.info("record_count is: %s", record_count)
-
-            # Move files to Processed folder for Transactional Data
-            if file_movement_indicator == 1 and fileMover is not None:
-                fileMover.move_files(pattern)
-                logging.info("move file")
-
-        iniCount += 1
-    AuditFactory.write_log(spark_session, job_id, "Job Completed", "INFO", "Pipeline Completed Successfully")
-    except Exception as e:
+                iniCount += 1
+            AuditFactory.write_log(spark_session, job_id, "Job Completed", "INFO", "Pipeline Completed Successfully")
+        except Exception as e:
             if source_load_type == "csv":
                 src_path = source_connection + client_name + "/"
                 dest_path = source_connection + client_name + "/REJECTED/"
