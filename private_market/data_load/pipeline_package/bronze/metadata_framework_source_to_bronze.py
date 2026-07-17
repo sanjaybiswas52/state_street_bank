@@ -1,8 +1,8 @@
 import logging
 
 from pyspark.dbutils import DBUtils
-from pyspark.sql import import functions as f
-from pyspark.sql.types import import StringType
+from pyspark.sql import functions as f
+from pyspark.sql.types import StringType
 
 from pipeline_package.factory.DataReaderFactory import DataReaderFactory
 from pipeline_package.factory.DataWriterFactory import DataWriterFactory
